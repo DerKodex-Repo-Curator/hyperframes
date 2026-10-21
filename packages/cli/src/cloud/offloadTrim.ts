@@ -14,6 +14,10 @@ export interface PlayedSegment {
   end: number;
 }
 
+// Script that can write a clip's in-point, length, rate, loop or source moves what it plays.
+const RETIMING_SCRIPT_RE =
+  /data-(?:playback-start|media-start|start|duration|end|playback-rate)|\b(?:dataset|setAttribute|currentTime|playbackRate)\b|\.(?:src|loop)\b/;
+
 type AttrReader = (name: string) => string | null;
 
 function mediaSources(el: Element): string[] {
@@ -97,8 +101,10 @@ export function planTrim(input: {
   resolveKey: (rawSrc: string) => string | null;
   gridPerSecond: number;
   mentionedElsewhere: boolean;
+  /** Every script the page runs, entry inline scripts included. */
+  scriptCode: string;
 }): { segments: PlayedSegment[]; html: string } | null {
-  if (input.mentionedElsewhere) return null;
+  if (input.mentionedElsewhere || RETIMING_SCRIPT_RE.test(input.scriptCode)) return null;
   const { document } = parseHTML(input.entryHtml);
   const uses: Element[] = [];
   let sources = 0;

@@ -6,6 +6,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   createReadStream,
   mkdirSync,
   mkdtempSync,
@@ -457,17 +458,40 @@ async function stagedSha256(file: StagedFile): Promise<string> {
  * is used in place (checked unchanged after use), one staged in memory gets a temp copy.
  */
 function snapshotPath(path: string, file: StagedFile, tempFiles: string[]): string {
-  if (!Buffer.isBuffer(file)) return file.absPath;
+  return Buffer.isBuffer(file) ? stagedCopy(path, file, tempFiles) : file.absPath;
+}
+
+/** A private copy of the staged bytes, for readers that cache what they read before any check runs. */
+function stagedCopy(path: string, file: StagedFile, tempFiles: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), "hf-offload-src-"));
   tempFiles.push(dir);
   const copy = join(dir, basename(path));
-  writeFileSync(copy, file);
+  if (Buffer.isBuffer(file)) writeFileSync(copy, file);
+  else {
+    copyFileSync(file.absPath, copy);
+    assertUnchanged(file);
+  }
   return copy;
 }
 
 /** A text file's contents; media is never decoded, since it can exceed the longest string V8 allows. */
 function textOf(path: string, file: StagedFile | undefined): string | undefined {
   return TEXT_FILE_EXTS.test(path) && Buffer.isBuffer(file) ? file.toString("utf-8") : undefined;
+}
+
+/** What the page's scripts can read: inline scripts of HTML files, and script and data files. */
+function scriptCode(fileMap: Map<string, StagedFile>): string {
+  const parts: string[] = [];
+  for (const [path, content] of fileMap) {
+    const text = textOf(path, content);
+    if (text === undefined) continue;
+    if (/\.html?$/i.test(path)) {
+      for (const script of parseHTML(text).document.querySelectorAll("script:not([src])")) {
+        parts.push(script.textContent ?? "");
+      }
+    } else if (/\.(m?js|cjs|json)$/i.test(path)) parts.push(text);
+  }
+  return parts.join("\n");
 }
 
 function assertFitsAsset(path: string, filename: string, size: number): void {
@@ -545,6 +569,7 @@ async function planFileTrim(
       ([other, content]) =>
         other !== entryPath && other !== path && !!textOf(other, content)?.includes(name),
     ),
+    scriptCode: scriptCode(ctx.fileMap),
   });
   if (!plan) return null;
   ctx.fileMap.set(entryPath, Buffer.from(plan.html, "utf-8"));
@@ -650,7 +675,7 @@ function entryGifSources(
     const key = htmlSrcKey(ctx.absDir, entryPath, src, ctx.fileMap);
     if (!key?.toLowerCase().endsWith(".gif")) continue;
     const file = ctx.fileMap.get(key)!;
-    sourceAssets.set(src, snapshotPath(key, file, ctx.tempFiles));
+    sourceAssets.set(src, stagedCopy(key, file, ctx.tempFiles));
     heavy ||= stagedSize(file) >= OFFLOAD_MIN_BYTES;
   }
   return heavy ? sourceAssets : null;
@@ -707,28 +732,36 @@ function dropReplacedFiles(
   preparedGifSources: string[],
   assetUrls: string[],
 ): void {
+  // Asset URLs end in names like original.mp4 that can collide with a project file's name.
+  const withoutUrls = (text: string) =>
+    assetUrls.reduce((acc, url) => acc.replaceAll(url, ""), text);
+  const code = withoutUrls(scriptCode(fileMap));
   for (const item of report) {
-    if (isStillMentioned(fileMap, item.path, assetUrls)) item.kept_in_archive = true;
+    if (isStillMentioned(fileMap, item.path, code, withoutUrls)) item.kept_in_archive = true;
     else fileMap.delete(item.path);
   }
   for (const gif of preparedGifSources) {
-    if (!isStillMentioned(fileMap, gif, assetUrls)) fileMap.delete(gif);
+    if (!isStillMentioned(fileMap, gif, code, withoutUrls)) fileMap.delete(gif);
   }
 }
 
-// A file still named after rewriting (say, built by string concatenation) keeps a zip copy.
+/**
+ * Whether a reference rewriting could not replace may still load the file: its name anywhere, or its
+ * stem and extension both in script code, which can join them at runtime ("clip" + ".mp4").
+ */
 function isStillMentioned(
   fileMap: Map<string, StagedFile>,
   path: string,
-  assetUrls: string[],
+  code: string,
+  withoutUrls: (text: string) => string,
 ): boolean {
+  const ext = extname(path);
+  if (code.includes(basename(path, ext)) && code.includes(ext.slice(1))) return true;
   const name = basename(path);
   for (const [entryPath, content] of fileMap) {
     const contentText = textOf(entryPath, content);
     if (entryPath === path || !contentText?.includes(name)) continue;
-    // Asset URLs end in names like original.mp4 that can collide with a project file's name.
-    const text = assetUrls.reduce((acc, url) => acc.replaceAll(url, ""), contentText);
-    if (text.includes(name)) return true;
+    if (withoutUrls(contentText).includes(name)) return true;
   }
   return false;
 }

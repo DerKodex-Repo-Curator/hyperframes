@@ -589,6 +589,20 @@ describe("offloadHeavyMedia", () => {
       ),
       "long.mkv": HEAVY,
     });
+    const retimedById = project({
+      "index.html": html(
+        `<video id="a" src="long.mkv" data-start="0" data-duration="2" data-media-start="10"></video>` +
+          `<script>const a = document.getElementById("a"); a.setAttribute("data-media-start", "100"); a.volume = 0.5;</script>`,
+      ),
+      "long.mkv": HEAVY,
+    });
+    const retimedByDataset = project({
+      "index.html": html(
+        `<video id="a" src="long.mkv" data-duration="2" data-media-start="10"></video><script src="main.js"></script>`,
+      ),
+      "main.js": `document.getElementById("a").dataset.mediaStart = "100";`,
+      "long.mkv": HEAVY,
+    });
     const namedInPage = project({
       "index.html": html(
         `<video src="long.mkv" data-duration="2" data-media-start="10"></video><p data-note="long.mkv"></p>`,
@@ -603,6 +617,8 @@ describe("offloadHeavyMedia", () => {
       automated,
       offsetParent,
       nested,
+      retimedById,
+      retimedByDataset,
       namedInPage,
     ]) {
       const run = vi.fn(async () => ({
@@ -661,6 +677,66 @@ describe("offloadHeavyMedia", () => {
     expect(report).toEqual([]);
     expect(upload).not.toHaveBeenCalled();
     expect(fileMap.has("media/clip.mp4")).toBe(true);
+  });
+
+  it("keeps a zip copy of an offloaded file a script can also build from split strings", async () => {
+    const dir = project({
+      "index.html": html(
+        `<video id="v" src="media/clip.mp4"></video>` +
+          `<script>document.getElementById("v").src = "media/" + "clip" + ".mp4";</script>`,
+      ),
+      "media/clip.mp4": HEAVY,
+    });
+    const fileMap = buildPublishFileMap(dir);
+
+    const report = await offloadHeavyMedia(dir, fileMap, {
+      apiBaseUrl: "https://api.example",
+      upload: fakeUpload(),
+      cachePath: cachePath(),
+    });
+
+    expect(report).toEqual([
+      expect.objectContaining({ path: "media/clip.mp4", kept_in_archive: true }),
+    ]);
+    expect(fileMap.has("media/clip.mp4")).toBe(true);
+  });
+
+  it("prepares an entry GIF staged on disk from a checked private copy", async () => {
+    const files = {
+      "index.html": html(`<img src="media/loop.gif" />`),
+      "media/loop.gif": HEAVY,
+    };
+    const prepared: Buffer[] = [];
+    const gifPrep = vi.fn<GifPrep>(async (input, options) => {
+      const source = options.sourceAssets.get("media/loop.gif")!;
+      // An edit while the renderer hashes and encodes must not reach what it caches.
+      writeFileSync(join(options.projectDir, "media/loop.gif"), Buffer.alloc(9));
+      prepared.push(readFileSync(source));
+      const outputPath = join(options.outputDir, "hfgif-v1-abc.webm");
+      writeFileSync(outputPath, "webm");
+      return {
+        html: input.replace(
+          `<img src="media/loop.gif" />`,
+          `<video src="_animated_gif/hfgif-v1-abc.webm"></video>`,
+        ),
+        preparedGifs: [{ sourceSrc: "media/loop.gif", outputPath }],
+      };
+    });
+    const opts = { apiBaseUrl: "https://api.example", upload: fakeUpload(), gifPrep };
+
+    const dir = project(files);
+    await offloadHeavyMedia(dir, stagePublishFiles(dir, OFFLOAD_MIN_BYTES), {
+      ...opts,
+      cachePath: cachePath(),
+    });
+    expect(prepared[0]?.equals(HEAVY)).toBe(true);
+
+    const edited = project(files);
+    const fileMap = stagePublishFiles(edited, OFFLOAD_MIN_BYTES);
+    writeFileSync(join(edited, "media/loop.gif"), Buffer.alloc(9));
+    await expect(
+      offloadHeavyMedia(edited, fileMap, { ...opts, cachePath: cachePath() }),
+    ).rejects.toThrow(/changed on disk/);
   });
 
   it("never decodes a media file as text, since one can exceed the longest string allowed", async () => {
