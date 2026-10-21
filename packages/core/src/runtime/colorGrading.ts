@@ -3835,7 +3835,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
 }): RuntimeColorGradingApi {
   const entries = new WeakMap<ColorGradingMediaElement, ColorGradingEntry>();
   const trackedElements = new Set<ColorGradingMediaElement>();
-  const failedWebGlSetup = new WeakSet<ColorGradingMediaElement>();
+  const hiddenAtRefresh = new Set<ColorGradingMediaElement>();
   const idleRenderers: ColorGradingRenderer[] = [];
   let observer: MutationObserver | null = null;
   let previewRenderer: ColorGradingPreviewRenderer | null = null;
@@ -3892,6 +3892,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
     grading: ResolvedHfColorGrading,
     source: EntrySource,
   ): boolean => {
+    hiddenAtRefresh.delete(element);
     const existing = entries.get(element);
     if (existing) {
       existing.grading = grading;
@@ -3905,10 +3906,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
       attachCanvas(renderer.canvas, element);
     } else {
       const created = newRenderer(element);
-      if (!created) {
-        failedWebGlSetup.add(element);
-        return false;
-      }
+      if (!created) return false;
       renderer = created;
     }
     const entry: ColorGradingEntry = {
@@ -3974,6 +3972,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
   };
 
   const removeElement = (element: ColorGradingMediaElement): void => {
+    hiddenAtRefresh.delete(element);
     const entry = entries.get(element);
     if (!entry) return;
     const renderer = detachEntry(entry);
@@ -3991,6 +3990,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
   const refresh = (): number => {
     if (destroyed) return 0;
     const attributeElements = new Set<ColorGradingMediaElement>();
+    hiddenAtRefresh.clear();
     const nodes = document.querySelectorAll(COLOR_GRADING_SOURCE_SELECTOR);
     nodes.forEach((node) => {
       if (!isColorGradingMediaElement(node)) return;
@@ -4001,6 +4001,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
           upsert(node, grading, "attribute");
         } else {
           removeElement(node);
+          hiddenAtRefresh.add(node);
         }
       } else {
         removeElement(node);
@@ -4020,13 +4021,14 @@ export function createColorGradingRuntime(pausedMediaLease?: {
   };
 
   const adoptShownMedia = (): void => {
-    document.querySelectorAll(COLOR_GRADING_SOURCE_SELECTOR).forEach((node) => {
-      if (!isColorGradingMediaElement(node) || entries.has(node) || failedWebGlSetup.has(node))
-        return;
-      if (!isShownForColorGrading(node)) return;
-      const grading = readColorGradingAttribute(node);
-      if (isRuntimeColorGradingActive(node, grading)) upsert(node, grading, "attribute");
-    });
+    for (const element of hiddenAtRefresh) {
+      if (element.isConnected && !isShownForColorGrading(element)) continue;
+      hiddenAtRefresh.delete(element);
+      const grading = readColorGradingAttribute(element);
+      if (element.isConnected && isRuntimeColorGradingActive(element, grading)) {
+        upsert(element, grading, "attribute");
+      }
+    }
   };
 
   const redraw = (): number => {
@@ -4199,6 +4201,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
     observer?.disconnect();
     observer = null;
     for (const element of trackedElements) removeElement(element);
+    hiddenAtRefresh.clear();
     for (const renderer of idleRenderers) destroyProgramResources(renderer);
     idleRenderers.length = 0;
     shared?.gl.getExtension("WEBGL_lose_context")?.loseContext();
