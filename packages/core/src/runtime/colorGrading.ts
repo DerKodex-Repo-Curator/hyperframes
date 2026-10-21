@@ -2697,6 +2697,10 @@ function findRenderFrameImage(video: HTMLVideoElement): HTMLImageElement | null 
   return frame && isDrawableSource(frame) ? frame : null;
 }
 
+function isShownForColorGrading(element: ColorGradingMediaElement): boolean {
+  return isVisibleForColorGrading(element) || hasInjectedRenderFrame(element);
+}
+
 function hasInjectedRenderFrame(element: ColorGradingMediaElement): boolean {
   if (!isVideoElement(element)) return false;
   const frame = findInjectedRenderFrame(element);
@@ -3831,6 +3835,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
 }): RuntimeColorGradingApi {
   const entries = new WeakMap<ColorGradingMediaElement, ColorGradingEntry>();
   const trackedElements = new Set<ColorGradingMediaElement>();
+  const failedSetup = new WeakSet<ColorGradingMediaElement>();
   const idleRenderers: ColorGradingRenderer[] = [];
   let observer: MutationObserver | null = null;
   let previewRenderer: ColorGradingPreviewRenderer | null = null;
@@ -3900,7 +3905,10 @@ export function createColorGradingRuntime(pausedMediaLease?: {
       attachCanvas(renderer.canvas, element);
     } else {
       const created = newRenderer(element);
-      if (!created) return false;
+      if (!created) {
+        failedSetup.add(element);
+        return false;
+      }
       renderer = created;
     }
     const entry: ColorGradingEntry = {
@@ -3989,7 +3997,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
       attributeElements.add(node);
       const grading = readColorGradingAttribute(node);
       if (isRuntimeColorGradingActive(node, grading)) {
-        if (isVisibleForColorGrading(node) || hasInjectedRenderFrame(node)) {
+        if (isShownForColorGrading(node)) {
           upsert(node, grading, "attribute");
         } else {
           removeElement(node);
@@ -4011,8 +4019,21 @@ export function createColorGradingRuntime(pausedMediaLease?: {
     return trackedElements.size;
   };
 
+  // Nothing re-scans when an ancestor's visibility flips (a timeline revealing a layer, a host
+  // starting later), so every draw pass adopts graded media that has come into view. Media whose
+  // WebGL setup already failed is not retried every frame.
+  const adoptShownMedia = (): void => {
+    document.querySelectorAll(COLOR_GRADING_SOURCE_SELECTOR).forEach((node) => {
+      if (!isColorGradingMediaElement(node) || entries.has(node) || failedSetup.has(node)) return;
+      if (!isShownForColorGrading(node)) return;
+      const grading = readColorGradingAttribute(node);
+      if (isRuntimeColorGradingActive(node, grading)) upsert(node, grading, "attribute");
+    });
+  };
+
   const redraw = (): number => {
     if (destroyed) return 0;
+    adoptShownMedia();
     let drawn = 0;
     for (const element of trackedElements) {
       const entry = entries.get(element);
@@ -4039,6 +4060,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
 
   const redrawAnimated = (): number => {
     if (destroyed) return 0;
+    adoptShownMedia();
     let drawn = 0;
     for (const element of trackedElements) {
       const entry = entries.get(element);
@@ -4111,7 +4133,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
     }
     const grading = readColorGradingAttribute(element);
     if (isRuntimeColorGradingActive(element, grading)) {
-      if (!isVisibleForColorGrading(element) && !hasInjectedRenderFrame(element)) {
+      if (!isShownForColorGrading(element)) {
         return { state: "pending", message: "Waiting for visible media" };
       }
       return { state: "unavailable", message: "WebGL unavailable" };
