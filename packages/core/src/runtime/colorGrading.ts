@@ -3835,7 +3835,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
 }): RuntimeColorGradingApi {
   const entries = new WeakMap<ColorGradingMediaElement, ColorGradingEntry>();
   const trackedElements = new Set<ColorGradingMediaElement>();
-  const failedSetup = new WeakSet<ColorGradingMediaElement>();
+  const failedWebGlSetup = new WeakSet<ColorGradingMediaElement>();
   const idleRenderers: ColorGradingRenderer[] = [];
   let observer: MutationObserver | null = null;
   let previewRenderer: ColorGradingPreviewRenderer | null = null;
@@ -3906,7 +3906,7 @@ export function createColorGradingRuntime(pausedMediaLease?: {
     } else {
       const created = newRenderer(element);
       if (!created) {
-        failedSetup.add(element);
+        failedWebGlSetup.add(element);
         return false;
       }
       renderer = created;
@@ -4019,12 +4019,10 @@ export function createColorGradingRuntime(pausedMediaLease?: {
     return trackedElements.size;
   };
 
-  // Nothing re-scans when an ancestor's visibility flips (a timeline revealing a layer, a host
-  // starting later), so every draw pass adopts graded media that has come into view. Media whose
-  // WebGL setup already failed is not retried every frame.
   const adoptShownMedia = (): void => {
     document.querySelectorAll(COLOR_GRADING_SOURCE_SELECTOR).forEach((node) => {
-      if (!isColorGradingMediaElement(node) || entries.has(node) || failedSetup.has(node)) return;
+      if (!isColorGradingMediaElement(node) || entries.has(node) || failedWebGlSetup.has(node))
+        return;
       if (!isShownForColorGrading(node)) return;
       const grading = readColorGradingAttribute(node);
       if (isRuntimeColorGradingActive(node, grading)) upsert(node, grading, "attribute");
