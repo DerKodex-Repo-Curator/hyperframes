@@ -559,6 +559,15 @@ export function stripJsComments(source: string): string {
   return scanJsComments(source).out;
 }
 
+/** True when an inline script is the GSAP library itself: the producer's inlining comment or GSAP's banner. */
+export function isInlinedGsapLibrary(scriptText: string): boolean {
+  return (
+    /\/\*\s*inlined:.*gsap/i.test(scriptText) ||
+    /\b_gsScope\b/.test(scriptText) ||
+    /\bGreenSock\b/.test(scriptText)
+  );
+}
+
 export function stripJsCode(source: string): string {
   const { out, balanced } = scanJsComments(source);
   return balanced ? stripJsStringLiterals(out) : source;

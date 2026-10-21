@@ -12,6 +12,7 @@ import {
   truncateSnippet,
   stripJsComments,
   stripStringLiterals,
+  isInlinedGsapLibrary,
   extractCompositionIdsFromCss,
   extractTimelineRegistryKeys,
   getInlineScriptSyntaxError,
@@ -940,6 +941,9 @@ export const coreRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = [
     ];
 
     for (const script of scripts) {
+      // GSAP's internals (ticker, utils.random) are library code; author calls are flagged where made.
+      // Whole-script skip: author code appended to the library in the same script goes unchecked.
+      if (isInlinedGsapLibrary(script.content)) continue;
       const withoutComments = stripJsComments(script.content);
       // Strings are content, not code. A composition that DISPLAYS source (the
       // code-snippet blocks, /pr-to-video) carries `Math.random()` inside a string

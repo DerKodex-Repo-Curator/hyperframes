@@ -1208,6 +1208,38 @@ describe("core rules", () => {
     });
   });
 
+  describe("non_deterministic_code — inlined GSAP library", () => {
+    // Banner lines and internals excerpted from gsap@3.14.2 dist/gsap.min.js.
+    const gsapInternals =
+      "function gb(t){return t.sort(function(){return.5-Math.random()})}" +
+      "function Ic(){var t=Date.now(),o=[];return o}";
+    const pastedGsap = `/*! GSAP 3.14.2 | @license Copyright 2025, GreenSock. All rights reserved. */
+${gsapInternals}`;
+    const producerInlinedGsap = `/* inlined: https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js */
+${gsapInternals}`;
+    const comp = (library: string, author = "") => `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080" data-start="0" data-duration="5"></div>
+  <script>${library}</script>
+  <script>const tl = gsap.timeline({ paused: true }); ${author} window.__timelines = { main: tl };</script>
+</body></html>`;
+
+    it.each([
+      ["pasted with its banner", pastedGsap],
+      ["inlined by the producer", producerInlinedGsap],
+    ])("does not flag GSAP's own internals when %s", async (_shape, library) => {
+      const result = await lintHyperframeHtml(comp(library));
+      expect(result.findings.filter((f) => f.code === "non_deterministic_code")).toEqual([]);
+    });
+
+    it("still flags the author's Math.random() next to inlined GSAP", async () => {
+      const result = await lintHyperframeHtml(comp(pastedGsap, "const r = Math.random();"));
+      const findings = result.findings.filter((f) => f.code === "non_deterministic_code");
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain("Math.random()");
+    });
+  });
+
   describe("timeline_id_mismatch — only top-level registry keys are composition ids", () => {
     const comp = (script: string) => `
 <html><body>
