@@ -3,7 +3,7 @@
 // (experiment-framework docs/error-codes.md); each code the sync routes answer becomes one `kind` here, so the
 // engine and the window branch on a kind, never on a message.
 
-/** @typedef {import("./types").SyncErrorKind} SyncErrorKind */
+/** @typedef {import("./types.js").SyncErrorKind} SyncErrorKind */
 
 /** @type {Record<string, SyncErrorKind>} */
 const KIND_BY_CODE = {
