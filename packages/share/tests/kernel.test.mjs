@@ -273,3 +273,42 @@ test("linked media changes invalidate the rendered source and link cycles termin
   await writeFile(join(media, "clip.mp4"), "updated video bytes");
   assert.notEqual(await projectFingerprint(dir), before);
 });
+test("required source never silently degrades after preparation or a server mismatch", async (t) => {
+  const dir = await folder(t);
+  await mkdir(join(dir, ".hyperframes"));
+  await writeFile(join(dir, ".hyperframes/video.mp4"), "video");
+  bindShareHost({ projectFingerprint: async () => "rendered" });
+  t.after(() => bindShareHost({ projectFingerprint }));
+  let creates = 0;
+  const api = {
+    createExport: async () => {
+      creates++;
+      throw new Error("should not send");
+    },
+  };
+  const request = {
+    projectPath: dir,
+    title: "Video",
+    client: api,
+    projectId: "project",
+    requireSource: true,
+    probe: async () => ({ width: 100, height: 100, duration: 1 }),
+    filesForExport: async () => null,
+  };
+  assert.match(await addVersion(request), /Source changed/);
+  assert.equal(creates, 0);
+  const { ReviewFailed } = await import("../src/reviewClient.mjs");
+  api.createExport = async () => {
+    creates++;
+    throw new ReviewFailed(422, "snapshot_mismatch");
+  };
+  await addVersion({
+    ...request,
+    filesForExport: async () => ({
+      space_id: "space",
+      composition_id: "comp",
+      snapshot_id: "snap",
+    }),
+  });
+  assert.equal(creates, 1);
+});
